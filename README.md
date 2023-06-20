@@ -49,7 +49,7 @@ pipenv shell # Optional, this will spawn a subshell containing pipenv environmen
 
 ```bash 
 make install
-pipenv run panther_analysis_tool test --path aws_cloudtrail_rules/
+pipenv run panther_analysis_tool test --path rules/aws_cloudtrail_rules/
 ```
 
 ### Run detection tests
@@ -98,6 +98,22 @@ pipenv run panther_analysis_tool upload [-h] [--path PATH] [--out OUT]
 Global helper functions are defined in the `global_helpers` folder. This is a hard coded location and cannot change. However, you may create as many files as you'd like under this path. Simply import them into your detections by the specified `GlobalID`.
 
 Additionally, groups of detections may be linked to multiple "Reports", which is a system for tracking frameworks like CIS, PCI, MITRE ATT&CK, or more.
+
+### Using [Visual Studio Code](https://code.visualstudio.com/)
+If you are comfortable using the Visual Studio Code IDE, the `make vscode-config` command can configure VSCode to work with this repo. 
+
+`make vscode-config` will configure:
+1. Configure VSCode to use the python virtual environment for this repository.
+1. Resolve local imports like global_helpers, which permits code completion via Intellisense/Pylance
+1. Creates two debugging targets, which will give you single-button push support for running `panther_analysis_tool test` through the debugger.
+1. Installs JSONSchema support for your custom panther-analysis schemas in the `schemas/` directory. This brings IDE hints about which fields are necessary for schemas/custom-schema.yml files.
+1. Installs JSONSchema support for panther-analysis rules in the `rules/` directory. This brings IDE hints about which fields are necessary for rules/my-rule.yml files.
+
+
+```shell
+user@computer:panther-analysis: make vscode-config
+
+```
 
 ### Using Docker
 
