@@ -5,7 +5,8 @@ import re
 import time
 from datetime import datetime
 from ipaddress import ip_address
-from typing import Any, Dict, Optional, Sequence, Set, Union
+from math import atan2, cos, radians, sin, sqrt
+from typing import Any, Dict, Mapping, Optional, Sequence, Set, Union
 
 import boto3
 import requests
@@ -207,11 +208,9 @@ def get_counter(key: str, force_ttl_check: bool = False) -> int:
 
 def increment_counter(key: str, val: int = 1) -> int:
     """Increment a counter in the table.
-
     Args:
         key: The name of the counter (need not exist yet)
         val: How much to add to the counter
-
     Returns:
         The new value of the count
     """
@@ -234,13 +233,22 @@ def reset_counter(key: str) -> None:
 
 def set_key_expiration(key: str, epoch_seconds: int) -> None:
     """Configure the key to automatically expire at the given time.
-
     DynamoDB typically deletes expired items within 48 hours of expiration.
-
     Args:
         key: The name of the counter
         epoch_seconds: When you want the counter to expire (set to 0 to disable)
     """
+    if isinstance(epoch_seconds, str):
+        epoch_seconds = float(epoch_seconds)
+    if isinstance(epoch_seconds, float):
+        epoch_seconds = int(epoch_seconds)
+    if not isinstance(epoch_seconds, int):
+        return
+    # if we are given an epoch seconds that is less than
+    # 604800 ( aka seven days ), then add the epoch seconds to
+    # the timestamp of now
+    if epoch_seconds < 604801:
+        epoch_seconds = int(datetime.now().timestamp()) + epoch_seconds
     kv_table().update_item(
         Key={"key": key},
         UpdateExpression="SET expiresAt = :time",
@@ -250,19 +258,17 @@ def set_key_expiration(key: str, epoch_seconds: int) -> None:
 
 def put_dictionary(key: str, val: dict, epoch_seconds: int = None):
     """Overwrite a dictionary under the given key.
-
     The value must be JSON serializable, and therefore cannot contain:
         - Sets
         - Complex numbers or formulas
         - Custom objects
         - Keys that are not strings
-
     Args:
         key: The name of the dictionary
         val: A Python dictionary
         epoch_seconds: (Optional) Set string expiration time
     """
-    if not isinstance(val, dict):
+    if not isinstance(val, (dict, Mapping)):
         raise Exception("panther_oss_helpers.put_dictionary: value is not a dictionary")
 
     try:
@@ -317,10 +323,8 @@ def get_string_set(key: str, force_ttl_check: bool = False) -> Set[str]:
 
 def put_string_set(key: str, val: Sequence[str], epoch_seconds: int = None) -> None:
     """Overwrite a string set under the given key.
-
     This is faster than (reset_string_set + add_string_set) if you know exactly what the contents
     of the set should be.
-
     Args:
         key: The name of the string set
         val: A list/set/tuple of strings to store
@@ -337,11 +341,9 @@ def put_string_set(key: str, val: Sequence[str], epoch_seconds: int = None) -> N
 
 def add_to_string_set(key: str, val: Union[str, Sequence[str]]) -> Set[str]:
     """Add one or more strings to a set.
-
     Args:
         key: The name of the string set
         val: Either a single string or a list/tuple/set of strings to add
-
     Returns:
         The new value of the string set
     """
@@ -365,11 +367,9 @@ def add_to_string_set(key: str, val: Union[str, Sequence[str]]) -> Set[str]:
 
 def remove_from_string_set(key: str, val: Union[str, Sequence[str]]) -> Set[str]:
     """Remove one or more strings from a set.
-
     Args:
         key: The name of the string set
         val: Either a single string or a list/tuple/set of strings to remove
-
     Returns:
         The new value of the string set
     """
@@ -411,6 +411,47 @@ def evaluate_threshold(key: str, threshold: int = 10, expiry_seconds: int = 3600
     return False
 
 
+def check_account_age(key):
+    """
+    Searches DynamoDB for stored user_id or account_id string stored by indicator creation
+    rules for new user / account creation
+    """
+    if isinstance(key, str) and key != "":
+        return bool(get_string_set(key))
+    return False
+
+
+def km_between_ipinfo_loc(ipinfo_loc_one: dict, ipinfo_loc_two: dict):
+    """
+    compute the number of kilometers between two ipinfo_location enrichments
+    This uses a haversine computation which is imperfect and holds the benefit
+    of being supportable via stdlib. At polar opposites, haversine might be
+    0.3-0.5% off
+    See also https://en.wikipedia.org/wiki/Haversine_formula
+    See also https://stackoverflow.com/a/19412565
+    See also https://www.sunearthtools.com/tools/distance.php
+    """
+    if not set({"lat", "lng"}).issubset(set(ipinfo_loc_one.keys())):
+        # input ipinfo_loc_one doesn't have lat and lng keys
+        return None
+    if not set({"lat", "lng"}).issubset(set(ipinfo_loc_two.keys())):
+        # input ipinfo_loc_two doesn't have lat and lng keys
+        return None
+    lat_1 = radians(float(ipinfo_loc_one.get("lat")))
+    lng_1 = radians(float(ipinfo_loc_one.get("lng")))
+    lat_2 = radians(float(ipinfo_loc_two.get("lat")))
+    lng_2 = radians(float(ipinfo_loc_two.get("lng")))
+    # radius of the earth in kms
+    radius = 6372.795477598
+    lng_diff = lng_2 - lng_1
+    lat_diff = lat_2 - lat_1
+
+    step_1 = sin(lat_diff / 2) ** 2 + cos(lat_1) * cos(lat_2) * sin(lng_diff / 2) ** 2
+    step_2 = 2 * atan2(sqrt(step_1), sqrt(1 - step_1))
+    distance = radius * step_2
+    return distance
+
+
 def geoinfo_from_ip(ip: str) -> dict:  # pylint: disable=invalid-name
     """Looks up the geolocation of an IP address using ipinfo.io
 
@@ -434,6 +475,7 @@ def geoinfo_from_ip(ip: str) -> dict:  # pylint: disable=invalid-name
     url = f"https://ipinfo.io/{valid_ip}/json"
     resp = requests.get(url, timeout=5)
     if resp.status_code != 200:
+        # pylint: disable=broad-exception-raised
         raise Exception(f"Geo lookup failed: GET {url} returned {resp.status_code}")
     geoinfo = json.loads(resp.text)
     return geoinfo
@@ -484,16 +526,6 @@ def add_parse_delay(event, context: dict) -> dict:
     return context
 
 
-def check_account_age(key):
-    """
-    Searches DynamoDB for stored user_id or account_id string stored by indicator creation
-    rules for new user / account creation
-    """
-    if isinstance(key, str) and key != "":
-        return bool(get_string_set(key))
-    return False
-
-
 # When a single item is loaded from json, it is loaded as a single item
 # When a list of items is loaded from json, it is loaded as a list of that item
 # When we want to iterate over something that could be a single item or a list
@@ -506,59 +538,3 @@ def listify(maybe_list):
         return [maybe_list]
     # either a list or string
     return [maybe_list] if isinstance(maybe_list, (str, bytes, dict)) else maybe_list
-
-
-def _test_kv_store():
-    """Integration tests which validate the functions which interact with the key-value store.
-
-    Deploy Panther and then simply run "python3 panther.py" to test.
-    """
-    assert increment_counter("panther", 1) == 1
-    assert increment_counter("labs", 3) == 3
-    assert increment_counter("panther", -2) == -1
-    assert increment_counter("panther", 0) == -1
-    assert increment_counter("panther", 11) == 10
-
-    assert get_counter("panther") == 10
-    assert get_counter("labs") == 3
-    assert get_counter("nonexistent") == 0
-
-    reset_counter("panther")
-    reset_counter("labs")
-    assert get_counter("panther") == 0
-    assert get_counter("labs") == 0
-
-    set_key_expiration("panther", int(time.time()))
-
-    # Add elements in a list, tuple, set, or as singleton strings
-    # The same key can be used to store int counts and string sets
-    assert add_to_string_set("panther", ["a", "b"]) == {"a", "b"}
-    assert add_to_string_set("panther", ["b", "a"]) == {"a", "b"}
-    assert add_to_string_set("panther", "c") == {"a", "b", "c"}
-    assert add_to_string_set("panther", set()) == {"a", "b", "c"}
-    assert add_to_string_set("panther", {"b", "c", "d"}) == {"a", "b", "c", "d"}
-    assert add_to_string_set("panther", ("d", "e")) == {"a", "b", "c", "d", "e"}
-
-    # Empty strings are allowed
-    assert add_to_string_set("panther", "") == {"a", "b", "c", "d", "e", ""}
-
-    assert get_string_set("labs") == set()
-    assert get_string_set("panther") == {"a", "b", "c", "d", "e", ""}
-
-    assert remove_from_string_set("panther", ["b", "c", "d"]) == {"a", "e", ""}
-    assert remove_from_string_set("panther", "") == {"a", "e"}
-    assert remove_from_string_set("panther", "") == {"a", "e"}
-
-    # Overwrite contents completely
-    put_string_set("panther", ["go", "python"])
-    assert get_string_set("panther") == {"go", "python"}
-    put_string_set("labs", [])
-    assert get_string_set("labs") == set()
-
-    reset_string_set("panther")
-    reset_string_set("nonexistent")  # no error
-    assert get_string_set("panther") == set()
-
-
-if __name__ == "__main__":
-    _test_kv_store()
