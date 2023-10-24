@@ -1,7 +1,7 @@
 import time
 
 from panther_base_helpers import is_ip_in_network
-from panther_oss_helpers import (
+from panther_detection_helpers.caching import (
     add_to_string_set,
     get_string_set,
     put_string_set,
@@ -24,7 +24,11 @@ SHARED_IP_SPACE = [
 
 def rule(event):
     # Pre-filter: event_type_id = 5 is login events.
-    if event.get("event_type_id") != 5 or not event.get("ipaddr") or not event.get("user_id"):
+    if (
+        str(event.get("event_type_id")) != "5"
+        or not event.get("ipaddr")
+        or not event.get("user_id")
+    ):
         return False
     # We expect to see multiple user logins from these shared, common ip addresses
     if is_ip_in_network(event.get("ipaddr"), SHARED_IP_SPACE):
